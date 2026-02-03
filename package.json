@@ -10,5 +10,10 @@
   "scripts": {
     "dev": "node packages/bot/src/index.js",
     "backtest": "node scripts/backtest.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "ethers": "^6.16.0",
+    "ws": "^8.19.0"
   }
 }
