@@ -100,13 +100,23 @@ export class PolymarketClient {
         throw new Error(`API error: ${response.status}`);
       }
 
-      const markets = await response.json();
+      const responseData = await response.json();
+      
+      // Handle the {data: [...]} wrapper
+      const markets = responseData.data || responseData;
+      
+      if (!Array.isArray(markets)) {
+        logger.warn('Unexpected markets response format', { type: typeof markets });
+        return [];
+      }
       
       // Store market metadata and subscribe to WebSocket
       for (const market of markets) {
         const marketId = market.condition_id;
         
-        // Find YES and NO token IDs
+        if (!marketId) continue;
+        
+        // Find YES and NO token IDs from tokens array
         const yesToken = market.tokens?.find(t => t.outcome === 'Yes');
         const noToken = market.tokens?.find(t => t.outcome === 'No');
 
@@ -120,6 +130,7 @@ export class PolymarketClient {
             yesPrice: parseFloat(yesToken.price) || null,
             noPrice: parseFloat(noToken.price) || null,
             endDate: market.end_date_iso,
+            active: market.active,
           });
 
           // Initialize price cache with current prices
@@ -137,7 +148,7 @@ export class PolymarketClient {
         }
       }
 
-      logger.info(`Fetched ${this.markets.size} markets`);
+      logger.info(`Fetched and processed ${this.markets.size} markets`);
       return Array.from(this.markets.values());
       
     } catch (error) {
