@@ -15,7 +15,7 @@ export class RebalancingDetector {
   start() {
     // Listen for price updates
     this.priceCache.onUpdate((marketId, prices) => {
-      this._checkForArbitrage(marketId, prices);
+      this._checkForArbitrage(prices.marketId, prices);
     });
 
     logger.info('RebalancingDetector started', {
@@ -130,8 +130,8 @@ export class RebalancingDetector {
     const allPrices = this.priceCache.getAll();
     let count = 0;
     
-    for (const [marketId, prices] of allPrices) {
-      this._checkForArbitrage(marketId, prices);
+    for (const prices of allPrices) {
+      this._checkForArbitrage(prices.marketId, prices);
       count++;
     }
     
