@@ -1,0 +1,10 @@
+{
+  "name": "@polymarket-arb/infrastructure",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "cdk": "cdk",
+    "deploy": "cdk deploy --all"
+  }
+}
