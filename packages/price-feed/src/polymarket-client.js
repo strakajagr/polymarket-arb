@@ -7,6 +7,7 @@ export class PolymarketClient {
     this.wsManager = new WebSocketManager(config.polymarket.wsUrl);
     this.priceCache = new PriceCache();
     this.markets = new Map(); // marketId -> market metadata
+    this.tokenToMarket = new Map(); // tokenId -> marketId (for WS message routing)
   }
 
   async connect() {
@@ -28,17 +29,29 @@ export class PolymarketClient {
       this._handleBookUpdate(message);
     } else if (message.event_type === 'price_change') {
       this._handlePriceChange(message);
+    } else if (message.event_type === 'last_trade_price') {
+      this._handleLastTradePrice(message);
     } else if (message.event_type === 'tick_size_change') {
       // Ignore tick size changes
     } else {
-      logger.debug('Unknown message type', { type: message.event_type });
+      logger.debug('Unknown message type', { type: message.event_type, keys: Object.keys(message) });
     }
   }
 
   _handleBookUpdate(message) {
-    const { market, asset_id, bids, asks } = message;
+    const { asset_id, bids, asks } = message;
     
-    if (!market || !asset_id) return;
+    if (!asset_id) return;
+
+    // Look up which market this token belongs to
+    const marketId = this.tokenToMarket.get(asset_id);
+    if (!marketId) {
+      logger.debug('Received price for unknown token', { asset_id: asset_id.substring(0, 16) });
+      return;
+    }
+
+    const marketData = this.markets.get(marketId);
+    if (!marketData) return;
 
     // Get best bid and ask
     const bestBid = bids?.[0]?.price ? parseFloat(bids[0].price) : null;
@@ -56,27 +69,23 @@ export class PolymarketClient {
 
     if (price === null) return;
 
-    // Determine if this is YES or NO token
-    const marketData = this.markets.get(market);
-    if (!marketData) {
-      logger.debug('Received price for unknown market', { market });
-      return;
-    }
-
     const isYes = asset_id === marketData.yesTokenId;
     const updateData = isYes 
       ? { yesPrice: price, yesTokenId: asset_id }
       : { noPrice: price, noTokenId: asset_id };
 
-    this.priceCache.update(market, updateData);
+    this.priceCache.update(marketId, updateData);
   }
 
   _handlePriceChange(message) {
-    const { market, price, asset_id } = message;
+    const { price, asset_id } = message;
     
-    if (!market || price === undefined) return;
+    if (price === undefined || !asset_id) return;
 
-    const marketData = this.markets.get(market);
+    const marketId = this.tokenToMarket.get(asset_id);
+    if (!marketId) return;
+
+    const marketData = this.markets.get(marketId);
     if (!marketData) return;
 
     const isYes = asset_id === marketData.yesTokenId;
@@ -84,7 +93,26 @@ export class PolymarketClient {
       ? { yesPrice: parseFloat(price) }
       : { noPrice: parseFloat(price) };
 
-    this.priceCache.update(market, updateData);
+    this.priceCache.update(marketId, updateData);
+  }
+
+  _handleLastTradePrice(message) {
+    const { price, asset_id } = message;
+    
+    if (price === undefined || !asset_id) return;
+
+    const marketId = this.tokenToMarket.get(asset_id);
+    if (!marketId) return;
+
+    const marketData = this.markets.get(marketId);
+    if (!marketData) return;
+
+    const isYes = asset_id === marketData.yesTokenId;
+    const updateData = isYes 
+      ? { yesPrice: parseFloat(price) }
+      : { noPrice: parseFloat(price) };
+
+    this.priceCache.update(marketId, updateData);
   }
 
   /**
@@ -110,6 +138,8 @@ export class PolymarketClient {
         return [];
       }
       
+      let subscriptionCount = 0;
+      
       // Store market metadata and subscribe to WebSocket
       for (const market of markets) {
         const marketId = market.condition_id;
@@ -121,6 +151,7 @@ export class PolymarketClient {
         const noToken = market.tokens?.find(t => t.outcome === 'No');
 
         if (yesToken && noToken) {
+          // Store market data
           this.markets.set(marketId, {
             id: marketId,
             question: market.question,
@@ -133,7 +164,11 @@ export class PolymarketClient {
             active: market.active,
           });
 
-          // Initialize price cache with current prices
+          // Map token IDs back to market ID for message routing
+          this.tokenToMarket.set(yesToken.token_id, marketId);
+          this.tokenToMarket.set(noToken.token_id, marketId);
+
+          // Initialize price cache with current prices from REST API
           if (yesToken.price && noToken.price) {
             this.priceCache.update(marketId, {
               yesPrice: parseFloat(yesToken.price),
@@ -143,12 +178,13 @@ export class PolymarketClient {
             });
           }
 
-          // Subscribe to live updates
-          this.wsManager.subscribe(marketId);
+          // Subscribe to live updates using TOKEN IDs (not market/condition ID)
+          this.wsManager.subscribeToAssets(yesToken.token_id, noToken.token_id, marketId);
+          subscriptionCount++;
         }
       }
 
-      logger.info(`Fetched and processed ${this.markets.size} markets`);
+      logger.info(`Fetched ${this.markets.size} markets, subscribed to ${subscriptionCount} token pairs`);
       return Array.from(this.markets.values());
       
     } catch (error) {

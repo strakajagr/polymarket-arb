@@ -5,32 +5,19 @@ export class WebSocketManager {
   constructor(url) {
     this.url = url;
     this.ws = null;
-    this.isConnected = false;
+    this.messageHandlers = [];
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 10;
     this.reconnectDelay = 1000;
-    this.messageHandlers = new Set();
-    this.subscribedMarkets = new Set();
   }
 
-  connect() {
+  async connect() {
     return new Promise((resolve, reject) => {
-      logger.info('Connecting to Polymarket WebSocket...', { url: this.url });
-
       this.ws = new WebSocket(this.url);
 
       this.ws.on('open', () => {
         logger.info('WebSocket connected');
-        this.isConnected = true;
         this.reconnectAttempts = 0;
-        
-        // Resubscribe to markets if reconnecting
-        if (this.subscribedMarkets.size > 0) {
-          this.subscribedMarkets.forEach(marketId => {
-            this._sendSubscription(marketId);
-          });
-        }
-        
         resolve();
       });
 
@@ -38,22 +25,24 @@ export class WebSocketManager {
         try {
           const message = JSON.parse(data.toString());
           this.messageHandlers.forEach(handler => handler(message));
-        } catch (err) {
-          logger.error('Failed to parse WebSocket message', { error: err.message });
+        } catch (error) {
+          // Some messages are plain text status responses, not JSON
+          const text = data.toString();
+          if (text !== 'INVALID OPERATION') {
+            logger.debug('Non-JSON WebSocket message', { text: text.substring(0, 100) });
+          }
+          // Silently ignore INVALID OPERATION - we'll use REST API prices instead
         }
-      });
-
-      this.ws.on('close', (code, reason) => {
-        logger.warn('WebSocket closed', { code, reason: reason.toString() });
-        this.isConnected = false;
-        this._attemptReconnect();
       });
 
       this.ws.on('error', (error) => {
         logger.error('WebSocket error', { error: error.message });
-        if (!this.isConnected) {
-          reject(error);
-        }
+        reject(error);
+      });
+
+      this.ws.on('close', () => {
+        logger.warn('WebSocket closed');
+        this._attemptReconnect();
       });
     });
   }
@@ -76,33 +65,54 @@ export class WebSocketManager {
     }, delay);
   }
 
-  subscribe(marketId) {
-    this.subscribedMarkets.add(marketId);
-    if (this.isConnected) {
-      this._sendSubscription(marketId);
+  /**
+   * Subscribe to a market's price updates
+   * Polymarket requires subscribing to asset (token) IDs, not market IDs
+   */
+  subscribeToAssets(yesTokenId, noTokenId, marketId) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      logger.warn('WebSocket not connected, cannot subscribe');
+      return;
     }
-  }
 
-  _sendSubscription(marketId) {
-    const message = {
+    // Subscribe to both YES and NO tokens for this market
+    // Format: {"type": "subscribe", "channel": "market", "market": "<TOKEN_ID>"}
+    const subscribeYes = {
       type: 'subscribe',
       channel: 'market',
-      market: marketId,
+      market: yesTokenId
     };
-    this.ws.send(JSON.stringify(message));
-    logger.debug('Subscribed to market', { marketId });
+    
+    const subscribeNo = {
+      type: 'subscribe',
+      channel: 'market', 
+      market: noTokenId
+    };
+
+    this.ws.send(JSON.stringify(subscribeYes));
+    this.ws.send(JSON.stringify(subscribeNo));
+    
+    logger.debug('Subscribed to market tokens', { 
+      marketId: marketId.substring(0, 16) + '...',
+      yesToken: yesTokenId.substring(0, 16) + '...',
+      noToken: noTokenId.substring(0, 16) + '...'
+    });
+  }
+
+  // Keep old method for backward compatibility but deprecate it
+  subscribe(marketId) {
+    // This was subscribing with condition_id which doesn't work
+    // Use subscribeToAssets instead
+    logger.debug('Deprecated subscribe called', { marketId: marketId.substring(0, 16) + '...' });
   }
 
   onMessage(handler) {
-    this.messageHandlers.add(handler);
-    return () => this.messageHandlers.delete(handler);
+    this.messageHandlers.push(handler);
   }
 
   close() {
     if (this.ws) {
       this.ws.close();
-      this.ws = null;
-      this.isConnected = false;
     }
   }
 }
