@@ -1,4 +1,4 @@
-import { kellyCalculator, logger } from '@polymarket-arb/core';
+import { calculateKellySize, calculateArbProfit, logger } from '@polymarket-arb/core';
 
 export class RebalancingDetector {
   constructor(priceCache, options = {}) {
@@ -73,11 +73,11 @@ export class RebalancingDetector {
     this.edgeStats.opportunities++;
 
     // Calculate Kelly-optimal position size
-    const kellySize = kellyCalculator.calculateKellySize(edge, this.bankroll);
+    const kellySize = calculateKellySize(edge, this.bankroll);
     const positionSize = Math.min(kellySize, this.maxPositionSize);
 
     // Calculate expected profit
-    const { profit, profitPercent } = kellyCalculator.calculateArbProfit(
+    const { profit, profitPercent } = calculateArbProfit(
       yesPrice, 
       noPrice, 
       positionSize
