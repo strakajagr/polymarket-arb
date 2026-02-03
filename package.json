@@ -2,14 +2,13 @@
   "name": "polymarket-arb",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "workspaces": [
     "packages/*",
     "infrastructure"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
-    "test": "npm run test --workspaces",
-    "dev": "npm run dev --workspace=packages/bot",
-    "backtest": "ts-node scripts/backtest.ts"
+    "dev": "node packages/bot/src/index.js",
+    "backtest": "node scripts/backtest.js"
   }
 }

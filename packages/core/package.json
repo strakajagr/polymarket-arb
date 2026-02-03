@@ -2,11 +2,9 @@
   "name": "@polymarket-arb/core",
   "version": "0.1.0",
   "private": true,
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "type": "module",
+  "main": "src/index.js",
   "scripts": {
-    "build": "tsc",
-    "dev": "ts-node src/index.ts",
-    "test": "jest"
+    "test": "node --test"
   }
 }
