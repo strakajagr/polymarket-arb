@@ -1,0 +1,166 @@
+import { config, logger } from '@polymarket-arb/core';
+import { WebSocketManager } from './websocket-manager.js';
+import { PriceCache } from './price-cache.js';
+
+export class PolymarketClient {
+  constructor() {
+    this.wsManager = new WebSocketManager(config.polymarket.wsUrl);
+    this.priceCache = new PriceCache();
+    this.markets = new Map(); // marketId -> market metadata
+  }
+
+  async connect() {
+    await this.wsManager.connect();
+
+    // Handle incoming WebSocket messages
+    this.wsManager.onMessage((message) => {
+      this._handleMessage(message);
+    });
+
+    logger.info('PolymarketClient connected');
+  }
+
+  _handleMessage(message) {
+    // Polymarket WebSocket message format varies
+    // This handles price book updates
+    
+    if (message.event_type === 'book') {
+      this._handleBookUpdate(message);
+    } else if (message.event_type === 'price_change') {
+      this._handlePriceChange(message);
+    } else if (message.event_type === 'tick_size_change') {
+      // Ignore tick size changes
+    } else {
+      logger.debug('Unknown message type', { type: message.event_type });
+    }
+  }
+
+  _handleBookUpdate(message) {
+    const { market, asset_id, bids, asks } = message;
+    
+    if (!market || !asset_id) return;
+
+    // Get best bid and ask
+    const bestBid = bids?.[0]?.price ? parseFloat(bids[0].price) : null;
+    const bestAsk = asks?.[0]?.price ? parseFloat(asks[0].price) : null;
+    
+    // Use midpoint as price, or best available
+    let price = null;
+    if (bestBid && bestAsk) {
+      price = (bestBid + bestAsk) / 2;
+    } else if (bestBid) {
+      price = bestBid;
+    } else if (bestAsk) {
+      price = bestAsk;
+    }
+
+    if (price === null) return;
+
+    // Determine if this is YES or NO token
+    const marketData = this.markets.get(market);
+    if (!marketData) {
+      logger.debug('Received price for unknown market', { market });
+      return;
+    }
+
+    const isYes = asset_id === marketData.yesTokenId;
+    const updateData = isYes 
+      ? { yesPrice: price, yesTokenId: asset_id }
+      : { noPrice: price, noTokenId: asset_id };
+
+    this.priceCache.update(market, updateData);
+  }
+
+  _handlePriceChange(message) {
+    const { market, price, asset_id } = message;
+    
+    if (!market || price === undefined) return;
+
+    const marketData = this.markets.get(market);
+    if (!marketData) return;
+
+    const isYes = asset_id === marketData.yesTokenId;
+    const updateData = isYes 
+      ? { yesPrice: parseFloat(price) }
+      : { noPrice: parseFloat(price) };
+
+    this.priceCache.update(market, updateData);
+  }
+
+  /**
+   * Fetch active markets from Polymarket API
+   */
+  async fetchMarkets(limit = 100) {
+    try {
+      const response = await fetch(
+        `${config.polymarket.apiUrl}/markets?limit=${limit}&active=true`
+      );
+      
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const markets = await response.json();
+      
+      // Store market metadata and subscribe to WebSocket
+      for (const market of markets) {
+        const marketId = market.condition_id;
+        
+        // Find YES and NO token IDs
+        const yesToken = market.tokens?.find(t => t.outcome === 'Yes');
+        const noToken = market.tokens?.find(t => t.outcome === 'No');
+
+        if (yesToken && noToken) {
+          this.markets.set(marketId, {
+            id: marketId,
+            question: market.question,
+            slug: market.market_slug,
+            yesTokenId: yesToken.token_id,
+            noTokenId: noToken.token_id,
+            yesPrice: parseFloat(yesToken.price) || null,
+            noPrice: parseFloat(noToken.price) || null,
+            endDate: market.end_date_iso,
+          });
+
+          // Initialize price cache with current prices
+          if (yesToken.price && noToken.price) {
+            this.priceCache.update(marketId, {
+              yesPrice: parseFloat(yesToken.price),
+              noPrice: parseFloat(noToken.price),
+              yesTokenId: yesToken.token_id,
+              noTokenId: noToken.token_id,
+            });
+          }
+
+          // Subscribe to live updates
+          this.wsManager.subscribe(marketId);
+        }
+      }
+
+      logger.info(`Fetched ${this.markets.size} markets`);
+      return Array.from(this.markets.values());
+      
+    } catch (error) {
+      logger.error('Failed to fetch markets', { error: error.message });
+      throw error;
+    }
+  }
+
+  /**
+   * Get price cache for external monitoring
+   */
+  getPriceCache() {
+    return this.priceCache;
+  }
+
+  /**
+   * Get market metadata
+   */
+  getMarket(marketId) {
+    return this.markets.get(marketId);
+  }
+
+  close() {
+    this.wsManager.close();
+  }
+}
